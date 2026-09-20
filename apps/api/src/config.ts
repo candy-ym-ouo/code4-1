@@ -16,6 +16,8 @@ const schema = z.object({
   PGUSER: z.string().min(1).optional(),
   PGPASSWORD: z.string().optional(),
   SESSION_SECRET: z.string().min(32).default(production ? "" : "development-only-secret-change-me-123456"),
+  SESSION_IDLE_DAYS: z.coerce.number().positive().default(7),
+  SESSION_ABSOLUTE_DAYS: z.coerce.number().positive().default(30),
   COOKIE_SECURE: z.enum(["true", "false"]).default(production ? "true" : "false").transform((value) => value === "true"),
   PUBLIC_APP_URL: z.string().url().default("http://localhost:8080").transform((value) => new URL(value).origin),
   UPLOAD_DIR: z.string().min(1).default("./uploads"),
@@ -40,6 +42,10 @@ if (parsed.NODE_ENV === "production" && (parsed.SESSION_SECRET.includes("develop
 
 if (parsed.NODE_ENV === "production" && parsed.PUBLIC_APP_URL.startsWith("https://") && !parsed.COOKIE_SECURE) {
   throw new Error("COOKIE_SECURE must be true when PUBLIC_APP_URL uses HTTPS");
+}
+
+if (parsed.SESSION_ABSOLUTE_DAYS < parsed.SESSION_IDLE_DAYS) {
+  throw new Error("SESSION_ABSOLUTE_DAYS must be greater than or equal to SESSION_IDLE_DAYS");
 }
 
 export const config = parsed;

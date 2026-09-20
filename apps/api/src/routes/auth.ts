@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import { loginSchema, passwordChangeSchema, setupSchema } from "@handcraft/contracts";
-import { hashPassword, verifyPassword, createSession, setSessionCookie, revokeSession, hashSessionToken, authenticate, type AuthenticatedRequest } from "../lib/auth.js";
+import { hashPassword, verifyPassword, createSession, setSessionCookie, revokeSession, authenticate, type AuthenticatedRequest } from "../lib/auth.js";
 import { pool, withTransaction } from "../lib/db.js";
 import { AppError } from "../lib/errors.js";
 import { parseInput } from "../lib/validation.js";
@@ -83,22 +83,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     return reply.status(204).send();
   });
 
-  app.get("/auth/me", async (request) => {
-    const token = request.cookies.handcraft_session;
-    if (!token) {
-      throw new AppError(401, "UNAUTHENTICATED", "请先登录");
-    }
-    const result = await pool.query<{ id: string; displayName: string }>(
-      `SELECT u.id, u.display_name AS "displayName"
-         FROM sessions s JOIN users u ON u.id = s.user_id
-        WHERE s.token_hash = $1
-          AND s.revoked_at IS NULL AND s.expires_at > now()`,
-      [hashSessionToken(token)]
-    );
-    const user = result.rows[0];
-    if (!user) {
-      throw new AppError(401, "SESSION_EXPIRED", "登录已失效，请重新登录");
-    }
+  app.get("/auth/me", { preHandler: authenticate }, async (request) => {
+    const user = (request as AuthenticatedRequest).authUser;
     return { data: user };
   });
 
@@ -116,7 +102,16 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       }
       const nextHash = await hashPassword(input.newPassword);
       await client.query("UPDATE users SET password_hash = $1 WHERE id = $2", [nextHash, user.id]);
-      await client.query("UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", [user.id]);
+      // Revoke every existing token immediately, and raise the per-user watermark
+      // so no token minted before the password change can pass validation either.
+      await client.query(
+        "UPDATE users SET sessions_revoked_at = now() WHERE id = $1",
+        [user.id]
+      );
+      await client.query(
+        "UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL",
+        [user.id]
+      );
       await writeAudit(client, {
         actorUserId: user.id,
         action: "UPDATE_PASSWORD",
