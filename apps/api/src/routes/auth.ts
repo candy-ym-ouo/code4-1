@@ -1,6 +1,16 @@
 import type { FastifyInstance } from "fastify";
 import { loginSchema, passwordChangeSchema, setupSchema } from "@handcraft/contracts";
-import { hashPassword, verifyPassword, createSession, setSessionCookie, revokeSession, hashSessionToken, authenticate, type AuthenticatedRequest } from "../lib/auth.js";
+import {
+  hashPassword,
+  verifyPassword,
+  createSession,
+  setSessionCookie,
+  clearSessionCookie,
+  revokeSession,
+  refreshSession,
+  authenticate,
+  type AuthenticatedRequest
+} from "../lib/auth.js";
 import { pool, withTransaction } from "../lib/db.js";
 import { AppError } from "../lib/errors.js";
 import { parseInput } from "../lib/validation.js";
@@ -43,7 +53,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     });
 
     const session = await createSession(user.id);
-    setSessionCookie(reply, session.token, session.expiresAt, config.COOKIE_SECURE);
+    setSessionCookie(reply, session.token, session.idleExpiresAt, config.COOKIE_SECURE);
     return reply.status(201).send({ data: { id: user.id, displayName: user.display_name } });
   });
 
@@ -72,34 +82,37 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         return { user, session };
       });
 
-      setSessionCookie(reply, authenticated.session.token, authenticated.session.expiresAt, config.COOKIE_SECURE);
+      setSessionCookie(reply, authenticated.session.token, authenticated.session.idleExpiresAt, config.COOKIE_SECURE);
       return { data: { id: authenticated.user.id, displayName: authenticated.user.display_name } };
     }
   );
 
+  // Sliding refresh: rotates the presented session token, extending the idle
+  // deadline but never beyond the family's absolute deadline. Rotation is
+  // serialized per family in the database, so concurrent refreshes cannot
+  // resurrect a session that was meanwhile logged out or revoked.
+  app.post(
+    "/auth/refresh",
+    {
+      config: {
+        rateLimit: {
+          max: 30,
+          timeWindow: "5 minutes"
+        }
+      }
+    },
+    async (request, reply) => refreshSession(request, reply)
+  );
+
   app.post("/auth/logout", async (request, reply) => {
     await revokeSession(request);
-    reply.clearCookie("handcraft_session", { path: "/" });
+    clearSessionCookie(reply);
     return reply.status(204).send();
   });
 
-  app.get("/auth/me", async (request) => {
-    const token = request.cookies.handcraft_session;
-    if (!token) {
-      throw new AppError(401, "UNAUTHENTICATED", "请先登录");
-    }
-    const result = await pool.query<{ id: string; displayName: string }>(
-      `SELECT u.id, u.display_name AS "displayName"
-         FROM sessions s JOIN users u ON u.id = s.user_id
-        WHERE s.token_hash = $1
-          AND s.revoked_at IS NULL AND s.expires_at > now()`,
-      [hashSessionToken(token)]
-    );
-    const user = result.rows[0];
-    if (!user) {
-      throw new AppError(401, "SESSION_EXPIRED", "登录已失效，请重新登录");
-    }
-    return { data: user };
+  app.get("/auth/me", { preHandler: authenticate }, async (request) => {
+    const user = (request as AuthenticatedRequest).authUser;
+    return { data: { id: user.id, displayName: user.displayName } };
   });
 
   app.post("/auth/password", { preHandler: authenticate }, async (request, reply) => {
@@ -116,7 +129,12 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       }
       const nextHash = await hashPassword(input.newPassword);
       await client.query("UPDATE users SET password_hash = $1 WHERE id = $2", [nextHash, user.id]);
-      await client.query("UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL", [user.id]);
+      // Revoke every session family immediately: all existing tokens, including
+      // any token being rotated concurrently, stop working at once.
+      await client.query(
+        "UPDATE session_families SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL",
+        [user.id]
+      );
       await writeAudit(client, {
         actorUserId: user.id,
         action: "UPDATE_PASSWORD",
@@ -125,7 +143,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         requestId: request.id
       });
     });
-    reply.clearCookie("handcraft_session", { path: "/" });
+    clearSessionCookie(reply);
     return reply.status(204).send();
   });
 }

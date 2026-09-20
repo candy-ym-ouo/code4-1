@@ -27,7 +27,7 @@
 | Web | Vue 3、TypeScript、Vite、Pinia、Vue Router、Element Plus |
 | API | Node.js 22、TypeScript、Fastify、Zod |
 | 数据库 | PostgreSQL 16、SQL migrations、不可变库存流水 |
-| 鉴权 | Argon2id、HttpOnly 会话 Cookie |
+| 鉴权 | Argon2id、HttpOnly 会话 Cookie、滑动刷新 + 绝对截止、刷新令牌轮换 |
 | 测试 | Vitest、API smoke test、生产构建检查 |
 
 ## 目录
@@ -103,6 +103,11 @@ node ops/smoke-test.mjs
 - 数量使用 PostgreSQL `numeric(18,6)`，API 使用十进制字符串。
 - 归档代替核心数据硬删除。
 - 审计日志只追加，不更新、不删除。
+- 会话以"登录一次 = 一个会话族"建模，族上记录绝对截止，令牌行记录轮换链与空闲截止。
+- 普通活跃请求滑动空闲截止（不换令牌）；`/auth/refresh` 原子轮换令牌，空闲窗口重新计时，但永不越过绝对截止。
+- 刷新在数据库内对令牌行和会话族行加锁串行化：并发刷新只有一次成功（204），其余得到 409，不会产生分叉令牌。
+- 已轮换的旧令牌只在极短竞态窗口内被刷新端点接受；窗口外重放视为令牌盗用，立即撤销整个会话族。
+- 退出登录和修改密码撤销整个会话族，任何在途的并发刷新都不能让会话复活；改密后必须用新密码重新登录。
 
 ## 文档
 

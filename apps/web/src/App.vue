@@ -25,7 +25,7 @@ const activeMenu = computed(() => {
 });
 
 function handleUnauthorized() {
-  auth.user = null;
+  auth.setUser(null);
   if (!isPublic.value) void router.push("/login");
 }
 
@@ -34,7 +34,7 @@ async function logout() {
     await auth.logout();
     ElMessage.success("已退出登录");
   } catch {
-    auth.user = null;
+    auth.setUser(null);
     ElMessage.warning("本地会话已退出，服务器未响应");
   } finally {
     await router.push("/login");

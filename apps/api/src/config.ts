@@ -16,6 +16,9 @@ const schema = z.object({
   PGUSER: z.string().min(1).optional(),
   PGPASSWORD: z.string().optional(),
   SESSION_SECRET: z.string().min(32).default(production ? "" : "development-only-secret-change-me-123456"),
+  SESSION_IDLE_DAYS: z.coerce.number().positive().max(30).default(7),
+  SESSION_ABSOLUTE_DAYS: z.coerce.number().positive().max(365).default(30),
+  SESSION_ROTATION_GRACE_SECONDS: z.coerce.number().int().positive().max(300).default(30),
   COOKIE_SECURE: z.enum(["true", "false"]).default(production ? "true" : "false").transform((value) => value === "true"),
   PUBLIC_APP_URL: z.string().url().default("http://localhost:8080").transform((value) => new URL(value).origin),
   UPLOAD_DIR: z.string().min(1).default("./uploads"),
@@ -29,6 +32,10 @@ if (!environment.DATABASE_URL && !environment.PGHOST) {
 }
 
 const parsed = schema.parse(environment);
+
+if (parsed.SESSION_ABSOLUTE_DAYS < parsed.SESSION_IDLE_DAYS) {
+  throw new Error("SESSION_ABSOLUTE_DAYS must be greater than or equal to SESSION_IDLE_DAYS");
+}
 
 if (parsed.NODE_ENV === "production" && (parsed.DATABASE_URL?.includes("change-me") || parsed.PGPASSWORD === "change-me")) {
   throw new Error("Production database password must not use the example value");

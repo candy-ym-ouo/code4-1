@@ -7,6 +7,11 @@
 - 数量：十进制字符串，例如 `"500.000000"`。
 - 时间：ISO 8601，推荐包含时区偏移。
 - 会话：HttpOnly Cookie `handcraft_session`。
+- 会话有效期采用滑动刷新 + 绝对截止：每次活跃请求滑动空闲超时（默认 7 天），
+  但自登录起不超过绝对时长（默认 30 天），到期必须重新登录。
+- 客户端应在空闲超时或定期调用 `POST /auth/refresh` 轮换令牌；并发刷新只有一次
+  轮换成功（204），其余返回 409 `SESSION_CONCURRENT_REFRESH`。
+- 修改密码或退出会立即撤销整个会话族，旧令牌与在途刷新均无法复活会话。
 - 分页：`page`、`pageSize`，最大 100。
 - 幂等：批次入库、库存调整和材料消耗支持 `Idempotency-Key`。
 - 乐观锁：更新请求携带 `version`。
@@ -37,9 +42,10 @@
 | GET | `/setup/status` | 查询是否完成初始化 |
 | POST | `/setup` | 创建唯一操作员 |
 | POST | `/auth/login` | 登录 |
-| POST | `/auth/logout` | 退出 |
+| POST | `/auth/refresh` | 滑动刷新，轮换会话令牌 |
+| POST | `/auth/logout` | 退出并撤销整个会话族 |
 | GET | `/auth/me` | 当前操作员 |
-| POST | `/auth/password` | 修改密码 |
+| POST | `/auth/password` | 修改密码，并撤销全部既有会话 |
 
 初始化请求：
 

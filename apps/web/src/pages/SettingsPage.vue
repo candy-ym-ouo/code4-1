@@ -21,7 +21,7 @@ async function changePassword() {
   saving.value = true;
   try {
     await request<void>("/auth/password", { method: "POST", body: { currentPassword: form.currentPassword, newPassword: form.newPassword } });
-    auth.user = null;
+    auth.setUser(null);
     ElMessage.success("密码已修改，请重新登录");
     await router.push("/login");
   } catch (error) { ElMessage.error(error instanceof ApiError ? error.message : "密码修改失败"); }
